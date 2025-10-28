@@ -422,10 +422,12 @@ sse_transport = SseServerTransport("/messages/")
 
 # Create Starlette app for HTTP/SSE
 async def handle_sse(request):
-    """Handle SSE connections from ElevenLabs"""
+    """Handle SSE connections from ElevenLabs (tool discovery + execution)."""
+    print("DEBUG: ElevenLabs connected to /sse")
+
     async with sse_transport.connect_sse(
-        request.scope, 
-        request.receive, 
+        request.scope,
+        request.receive,
         request._send
     ) as (read_stream, write_stream):
         await server.run(
@@ -433,7 +435,9 @@ async def handle_sse(request):
             write_stream,
             server.create_initialization_options()
         )
-    return Response()
+
+    print("DEBUG: ElevenLabs session closed")
+    return Response(status_code=200)
 
 # Health check endpoint
 async def health_check(request):
