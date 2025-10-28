@@ -293,7 +293,9 @@ async def list_tools() -> list[Tool]:
 
 
 @server.call_tool()
+@server.call_tool()
 async def call_tool(name: str, arguments: Any) -> list[TextContent]:
+    print(f"🧰 TOOL CALLED: {name} with args: {arguments}")  
     """Handle tool calls from the voice agent"""
     
     if name == "send_verification_code":
