@@ -170,8 +170,10 @@ def format_payment_for_voice(payment: dict) -> str:
 
 
 @server.list_tools()
+@server.list_tools()
 async def list_tools() -> list[Tool]:
     """List available MCP tools"""
+    print("DEBUG: MCP tool list ready for ElevenLabs")
     return [
         Tool(
             name="send_verification_code",
