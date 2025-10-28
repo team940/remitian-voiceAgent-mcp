@@ -1,0 +1,468 @@
+"""
+Tax Payment Approval MCP Server (SSE/HTTP Mode)
+A mock server for handling tax payment approvals via voice agent
+"""
+
+import asyncio
+import json
+from datetime import datetime
+from typing import Any
+from mcp.server import Server
+from mcp.types import Tool, TextContent
+from mcp.server.sse import SseServerTransport
+from starlette.applications import Starlette
+from starlette.routing import Route, Mount
+from starlette.responses import Response
+import uvicorn
+
+# Mock data - Tax payments for AgriFarm & Sons (taxpayerId: 3)
+MOCK_PAYMENTS = {
+    2: {
+        "id": 2,
+        "paymentDate": "2025-06-15",
+        "status": "PendingClientApproval",
+        "taxAmount": 520.00,
+        "taxpayerId": 3,
+        "taxpayerName": "AgriFarm & Sons",
+        "taxAccountId": 1,
+        "taxEntityId": 1,
+        "taxEntityName": "Judith Baker",
+        "taxAuthority": "US_GA",
+        "paymentTypeId": 11901,
+        "mainPaymentType": "IndividualIncomeTax_US_GA_500",
+        "paymentReason": "EstimatedTax",
+        "taxFormId": "10f8ddb6-057d-3ae2-ae62-1d1d0b3ba018",
+        "taxFormType": "US_GA_500ES",
+        "periodEndDate": "2024-12-31",
+        "approverUserId": 4
+    },
+    34: {
+        "id": 34,
+        "paymentDate": "2025-07-31",
+        "status": "PendingClientApproval",
+        "taxAmount": 100.00,
+        "taxpayerId": 3,
+        "taxpayerName": "AgriFarm & Sons",
+        "taxAccountId": 1,
+        "taxEntityId": 1,
+        "taxEntityName": "Judith Baker",
+        "taxAuthority": "US_GA",
+        "paymentTypeId": 11900,
+        "mainPaymentType": "IndividualIncomeTax_US_GA_500",
+        "paymentReason": "BalanceDue",
+        "periodEndDate": "2024-12-31",
+        "approverUserId": 4
+    },
+    1: {
+        "id": 1,
+        "paymentDate": "2025-08-04",
+        "status": "PendingClientApproval",
+        "taxAmount": 520.00,
+        "taxpayerId": 3,
+        "taxpayerName": "AgriFarm & Sons",
+        "taxAccountId": 1,
+        "taxEntityId": 1,
+        "taxEntityName": "Judith Baker",
+        "taxAuthority": "US_GA",
+        "paymentTypeId": 11901,
+        "mainPaymentType": "IndividualIncomeTax_US_GA_500",
+        "paymentReason": "EstimatedTax",
+        "taxFormId": "10f8ddb6-057d-3ae2-ae62-1d1d0b3ba018",
+        "taxFormType": "US_GA_500ES",
+        "periodEndDate": "2024-12-30",
+        "approverUserId": 4
+    },
+    81: {
+        "id": 81,
+        "paymentDate": "2025-08-07",
+        "status": "PendingClientApproval",
+        "taxAmount": 21000.00,
+        "taxpayerId": 3,
+        "taxpayerName": "AgriFarm & Sons",
+        "taxAccountId": 2,
+        "taxEntityId": 1,
+        "taxEntityName": "Judith Baker",
+        "taxAuthority": "US_IRS",
+        "paymentTypeId": 10105,
+        "mainPaymentType": "IndividualIncomeTax_US_IRS_1040",
+        "paymentReason": "EstimatedTax",
+        "periodEndDate": "2025-12-30",
+        "approverUserId": 4
+    },
+    62: {
+        "id": 62,
+        "paymentDate": "2025-08-30",
+        "status": "PendingClientApproval",
+        "taxAmount": 21000.00,
+        "taxpayerId": 3,
+        "taxpayerName": "AgriFarm & Sons",
+        "taxAccountId": 1,
+        "taxEntityId": 1,
+        "taxEntityName": "Judith Baker",
+        "taxAuthority": "US_GA",
+        "paymentTypeId": 11900,
+        "mainPaymentType": "IndividualIncomeTax_US_GA_500",
+        "paymentReason": "BalanceDue",
+        "periodEndDate": "2024-12-28",
+        "approverUserId": 4
+    },
+    111: {
+        "id": 111,
+        "paymentDate": "2025-09-15",
+        "status": "PendingClientApproval",
+        "taxAmount": 123.00,
+        "taxpayerId": 3,
+        "taxpayerName": "AgriFarm & Sons",
+        "taxAccountId": 46,
+        "taxEntityId": 45,
+        "taxEntityName": "Test User",
+        "taxAuthority": "US_IRS",
+        "paymentTypeId": 10105,
+        "mainPaymentType": "IndividualIncomeTax_US_IRS_1040",
+        "paymentReason": "EstimatedTax",
+        "periodEndDate": "2025-12-30",
+        "approverUserId": 4
+    },
+    3: {
+        "id": 3,
+        "paymentDate": "2025-09-15",
+        "status": "PendingClientApproval",
+        "taxAmount": 520.00,
+        "taxpayerId": 3,
+        "taxpayerName": "AgriFarm & Sons",
+        "taxAccountId": 1,
+        "taxEntityId": 1,
+        "taxEntityName": "Judith Baker",
+        "taxAuthority": "US_GA",
+        "paymentTypeId": 11901,
+        "mainPaymentType": "IndividualIncomeTax_US_GA_500",
+        "paymentReason": "EstimatedTax",
+        "taxFormId": "10f8ddb6-057d-3ae2-ae62-1d1d0b3ba018",
+        "taxFormType": "US_GA_500ES",
+        "periodEndDate": "2024-12-31",
+        "approverUserId": 4
+    }
+}
+
+# Mock verification storage
+VERIFICATION_CODES = {}  # {taxpayer_id: "1234"}
+
+# Initialize MCP server
+server = Server("tax-payment-server")
+
+def format_payment_for_voice(payment: dict) -> str:
+    """Format payment data in a human-readable way for voice agent"""
+    tax_year = payment["periodEndDate"][:4]
+    authority_map = {
+        "US_IRS": "IRS",
+        "US_GA": "Georgia"
+    }
+    authority = authority_map.get(payment["taxAuthority"], payment["taxAuthority"])
+    
+    payment_type_readable = payment["mainPaymentType"].replace("_", " ")
+    reason_readable = payment["paymentReason"].replace("BalanceDue", "Balance Due").replace("EstimatedTax", "Estimated Tax")
+    
+    return (f"Payment ID {payment['id']}: "
+            f"${payment['taxAmount']:.2f} to {authority} "
+            f"for {payment['taxEntityName']}, "
+            f"{reason_readable} for tax year {tax_year}, "
+            f"due {payment['paymentDate']}")
+
+
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    """List available MCP tools"""
+    return [
+        Tool(
+            name="send_verification_code",
+            description="Send a verification code to the taxpayer's phone (mock SMS)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "taxpayer_id": {
+                        "type": "integer",
+                        "description": "The taxpayer ID to send verification code to"
+                    }
+                },
+                "required": ["taxpayer_id"]
+            }
+        ),
+        Tool(
+            name="verify_code",
+            description="Verify the SMS code provided by the taxpayer",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "taxpayer_id": {
+                        "type": "integer",
+                        "description": "The taxpayer ID"
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "The verification code provided by the user"
+                    }
+                },
+                "required": ["taxpayer_id", "code"]
+            }
+        ),
+        Tool(
+            name="get_pending_payments",
+            description="Get all pending payments awaiting approval for a taxpayer",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "taxpayer_id": {
+                        "type": "integer",
+                        "description": "The taxpayer ID to retrieve payments for"
+                    }
+                },
+                "required": ["taxpayer_id"]
+            }
+        ),
+        Tool(
+            name="approve_payment",
+            description="Approve a tax payment",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "payment_id": {
+                        "type": "integer",
+                        "description": "The payment ID to approve"
+                    }
+                },
+                "required": ["payment_id"]
+            }
+        ),
+        Tool(
+            name="reschedule_payment",
+            description="Reschedule a payment to a new date",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "payment_id": {
+                        "type": "integer",
+                        "description": "The payment ID to reschedule"
+                    },
+                    "new_date": {
+                        "type": "string",
+                        "description": "New payment date in YYYY-MM-DD format"
+                    }
+                },
+                "required": ["payment_id", "new_date"]
+            }
+        ),
+        Tool(
+            name="reduce_payment_amount",
+            description="Reduce the amount of a payment",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "payment_id": {
+                        "type": "integer",
+                        "description": "The payment ID to modify"
+                    },
+                    "new_amount": {
+                        "type": "number",
+                        "description": "New payment amount"
+                    }
+                },
+                "required": ["payment_id", "new_amount"]
+            }
+        ),
+        Tool(
+            name="request_bank_setup_email",
+            description="Send an email to set up bank account via Plaid",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "taxpayer_id": {
+                        "type": "integer",
+                        "description": "The taxpayer ID"
+                    },
+                    "payment_id": {
+                        "type": "integer",
+                        "description": "The payment ID that needs bank setup"
+                    }
+                },
+                "required": ["taxpayer_id", "payment_id"]
+            }
+        )
+    ]
+
+
+@server.call_tool()
+async def call_tool(name: str, arguments: Any) -> list[TextContent]:
+    """Handle tool calls from the voice agent"""
+    
+    if name == "send_verification_code":
+        taxpayer_id = arguments["taxpayer_id"]
+        # Mock: Store the code "1234" for this taxpayer
+        VERIFICATION_CODES[taxpayer_id] = "1234"
+        
+        result = {
+            "success": True,
+            "message": f"Verification code sent to phone number on file for taxpayer {taxpayer_id}"
+        }
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+    
+    elif name == "verify_code":
+        taxpayer_id = arguments["taxpayer_id"]
+        code = arguments["code"]
+        
+        # Check if code matches "1234"
+        expected_code = VERIFICATION_CODES.get(taxpayer_id)
+        verified = (code == expected_code == "1234")
+        
+        result = {
+            "verified": verified,
+            "message": "Verification successful" if verified else "Invalid verification code"
+        }
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+    
+    elif name == "get_pending_payments":
+        taxpayer_id = arguments["taxpayer_id"]
+        
+        # Filter payments for this taxpayer with PendingClientApproval status
+        pending = [
+            p for p in MOCK_PAYMENTS.values()
+            if p["taxpayerId"] == taxpayer_id and p["status"] == "PendingClientApproval"
+        ]
+        
+        # Sort by payment date
+        pending.sort(key=lambda x: x["paymentDate"])
+        
+        result = {
+            "payments": pending,
+            "count": len(pending),
+            "taxpayer_name": pending[0]["taxpayerName"] if pending else "Unknown"
+        }
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+    
+    elif name == "approve_payment":
+        payment_id = arguments["payment_id"]
+        
+        if payment_id not in MOCK_PAYMENTS:
+            result = {
+                "success": False,
+                "message": f"Payment {payment_id} not found"
+            }
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        # Update status
+        MOCK_PAYMENTS[payment_id]["status"] = "QueuedForPayment"
+        
+        result = {
+            "success": True,
+            "payment": MOCK_PAYMENTS[payment_id],
+            "message": f"Payment {payment_id} approved and queued for payment"
+        }
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+    
+    elif name == "reschedule_payment":
+        payment_id = arguments["payment_id"]
+        new_date = arguments["new_date"]
+        
+        if payment_id not in MOCK_PAYMENTS:
+            result = {
+                "success": False,
+                "message": f"Payment {payment_id} not found"
+            }
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        # Update payment date
+        old_date = MOCK_PAYMENTS[payment_id]["paymentDate"]
+        MOCK_PAYMENTS[payment_id]["paymentDate"] = new_date
+        
+        result = {
+            "success": True,
+            "payment": MOCK_PAYMENTS[payment_id],
+            "message": f"Payment {payment_id} rescheduled from {old_date} to {new_date}"
+        }
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+    
+    elif name == "reduce_payment_amount":
+        payment_id = arguments["payment_id"]
+        new_amount = arguments["new_amount"]
+        
+        if payment_id not in MOCK_PAYMENTS:
+            result = {
+                "success": False,
+                "message": f"Payment {payment_id} not found"
+            }
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        # Update amount
+        old_amount = MOCK_PAYMENTS[payment_id]["taxAmount"]
+        MOCK_PAYMENTS[payment_id]["taxAmount"] = new_amount
+        
+        result = {
+            "success": True,
+            "payment": MOCK_PAYMENTS[payment_id],
+            "message": f"Payment {payment_id} amount reduced from ${old_amount:.2f} to ${new_amount:.2f}"
+        }
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+    
+    elif name == "request_bank_setup_email":
+        taxpayer_id = arguments["taxpayer_id"]
+        payment_id = arguments["payment_id"]
+        
+        # Mock sending email
+        result = {
+            "success": True,
+            "message": f"Bank setup email sent to taxpayer {taxpayer_id} for payment {payment_id}. They will receive a Plaid link to connect their bank account."
+        }
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+    
+    else:
+        raise ValueError(f"Unknown tool: {name}")
+
+
+# Create SSE transport
+sse_transport = SseServerTransport("/messages/")
+
+# Create Starlette app for HTTP/SSE
+async def handle_sse(request):
+    """Handle SSE connections from ElevenLabs"""
+    async with sse_transport.connect_sse(
+        request.scope, 
+        request.receive, 
+        request._send
+    ) as (read_stream, write_stream):
+        await server.run(
+            read_stream,
+            write_stream,
+            server.create_initialization_options()
+        )
+    return Response()
+
+# Health check endpoint
+async def health_check(request):
+    """Health check endpoint for monitoring"""
+    return Response(
+        content=json.dumps({
+            "status": "healthy",
+            "service": "tax-payment-mcp",
+            "version": "1.0.0"
+        }),
+        media_type="application/json"
+    )
+
+# Create Starlette app
+app = Starlette(
+    routes=[
+        Route("/sse", handle_sse),
+        Mount("/messages/", app=sse_transport.handle_post_message),
+        Route("/health", health_check),
+    ]
+)
+
+if __name__ == "__main__":
+    # Get port from environment variable (Render uses PORT)
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    
+    print(f"Starting Tax Payment MCP Server on port {port}...")
+    print(f"SSE endpoint: http://0.0.0.0:{port}/sse")
+    print(f"Health check: http://0.0.0.0:{port}/health")
+    
+    uvicorn.run(app, host="0.0.0.0", port=port)
